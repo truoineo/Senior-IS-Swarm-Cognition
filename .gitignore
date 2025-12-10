@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# UV package manager
+uv.lock
+.python-version
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Test notebooks (optional - uncomment if you want to exclude)
+# test.ipynb
+# Cycle1_Unicellular/test.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.devcontainer/
+
+# OS
+.DS_Store
+Thumbs.db
+.directory
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Git
+.git/
+
