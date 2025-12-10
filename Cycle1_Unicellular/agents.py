@@ -220,3 +220,5 @@ class UnicellularAgent(ContinuousSpaceAgent):
             
             if self.energy <= 0:
                 self.remove()
+    
+    
