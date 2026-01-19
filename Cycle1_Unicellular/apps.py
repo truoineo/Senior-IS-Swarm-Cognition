@@ -1,6 +1,8 @@
-from mesa.visualization import Slider, SolaraViz, make_plot_component, SpaceRenderer, make_space_component
+from mesa.visualization import Slider, SolaraViz, make_plot_component, SpaceRenderer
 from mesa.visualization.components import AgentPortrayalStyle
 from models import UnicellularModel
+from agents import UnicellularAgent, Resource, Hazard
+
 
 model_params = {
     "seed": {
@@ -32,140 +34,122 @@ model_params = {
         step=5,
     ),
     "sensing_radius": Slider(
-        label="Sensing Radius",
+        label="Sensing Radius (cells)",
         value=15,
-        min=5,
-        max=50,
-        step=5,
+        min=1,
+        max=30,
+        step=1,
     ),
     "movement_speed": Slider(
-        label="Movement Speed (x0.01)",
-        value=10,
-        min=5,
-        max=200,
-        step=5,
+        label="Movement Speed (cells/step)",
+        value=1,
+        min=1,
+        max=5,
+        step=1,
     ),
     "avoidance_threshold": Slider(
-        label="Avoidance Threshold (x0.1)",
-        value=30,
-        min=10,
-        max=100,
-        step=5,
+        label="Avoidance Threshold (cells)",
+        value=3,
+        min=1,
+        max=10,
+        step=1,
     ),
 }
 
+
 def agent_portrayal(agent):
-    """Color agents based on energy level"""
-    if agent.energy > 75:
-        color = "green"
-    elif agent.energy > 50:
-        color = "yellow"
-    elif agent.energy > 25:
-        color = "orange"
+    """Portrayal function for all agent types."""
+    if isinstance(agent, UnicellularAgent):
+        if agent.energy > 75:
+            color = "tab:blue"
+        elif agent.energy > 50:
+            color = "tab:cyan"
+        elif agent.energy > 25:
+            color = "tab:orange"
+        else:
+            color = "tab:red"
+        size = 50
+        zorder = 3
+        alpha = 0.9
+        
+    elif isinstance(agent, Resource):
+        color = "tab:green"
+        # Size scales with amount
+        size = 30 + (agent.amount / agent.initial_amount) * 70
+        zorder = 1
+        # Alpha scales with amount: 0.2 (nearly depleted) to 0.9 (full)
+        alpha = 0.2 + (agent.amount / agent.initial_amount) * 0.7
+        
+    elif isinstance(agent, Hazard):
+        color = "tab:red"
+        cells_covered = (2 * agent.radius + 1)
+        size = 50 * cells_covered
+        zorder = 0
+        alpha = 0.3
+        
     else:
-        color = "red"
+        color = "gray"
+        size = 25
+        zorder = 0
+        alpha = 0.5
     
     return AgentPortrayalStyle(
         color=color,
-        size=50,
-        marker="o",
-        alpha=0.9,
-        edgecolors="black",
-        linewidths=0.5
+        size=size,
+        marker="s",
+        zorder=zorder,
+        alpha=alpha,
     )
 
-def post_process_population(ax):
-    """Customize the matplotlib axes for the population line plot."""
-    ax.set_title("Population Over Time")
-    ax.set_xlabel("Time Step")
-    ax.set_ylabel("Population")
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
-    ax.set_aspect("auto")
-    
-population_plot = make_plot_component("Population", post_process = post_process_population)
 
-# Simple approach: Just show agents
-# Resources and hazards are background elements
-
-unicellular_model = UnicellularModel()
-renderer = SpaceRenderer(model = unicellular_model, backend = "matplotlib")
-renderer.draw_agents(agent_portrayal)
-
-def post_process(ax, model):
-    """Customize the matplotlib axes after rendering, and draw resources and hazards."""
-    from matplotlib.patches import Circle, Rectangle
-    
-    
-    # Draw hazards as transparent red circles
-    for hazard in model.hazards:
-        circle = Circle(
-            hazard.pos,
-            radius=hazard.radius,
-            color='red',
-            alpha=0.3,
-            zorder=1,  # Behind agents
-            linewidth=1,
-            edgecolor='darkred'
-        )
-        ax.add_patch(circle)
-        
-        # Add damage label
-        ax.text(
-            hazard.pos[0],
-            hazard.pos[1],
-            f'-{int(hazard.damage)}',
-            ha='center',
-            va='center',
-            fontsize=8,
-            color='darkred',
-            fontweight='bold',
-            zorder=2
-        )
-    
-    # Draw resources as green squares
-    for resource in model.resources:
-        if not resource.is_depleted():
-            # Size based on remaining amount (0.5 to 2.0)
-            size = 0.5 + (resource.amount / resource.initial_amount) * 1.5
-            square = Rectangle(
-                (resource.pos[0] - size/2, resource.pos[1] - size/2),  # Bottom-left corner
-                width=size,
-                height=size,
-                color='lightgreen',
-                alpha=0.7,
-                zorder=1,  # Behind agents
-                linewidth=1,
-                edgecolor='darkgreen'
-            )
-            ax.add_patch(square)
-            
-            # Add amount label
-            ax.text(
-                resource.pos[0],
-                resource.pos[1],
-                f'{int(resource.amount)}',
-                ha='center',
-                va='center',
-                fontsize=6,
-                color='darkgreen',
-                fontweight='bold',
-                zorder=2
-            )
-    
-    # Customize axes
-    ax.set_title("Unicellular Organism Simulation")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
-    ax.set_aspect("equal", adjustable="box")
+def post_process_space(ax):
+    """Customize the space visualization."""
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
 
 
+def post_process_lines(ax):
+    """Customize the line plot."""
+    ax.legend(loc="center left", bbox_to_anchor=(1, 0.9))
 
-page = SolaraViz(
-    model = unicellular_model, 
-    renderer = renderer,
-    components = [population_plot],
-    models_params = model_params,
-    name = "Unicellular Organism Simulation",
+
+# Create line plot components
+population_plot = make_plot_component(
+    {
+        "Population": "tab:blue",
+        "Active Resources": "tab:green",
+    },
+    post_process=post_process_lines,
 )
-#need conversion to discrete space instead
+
+energy_plot = make_plot_component(
+    {"Mean Energy": "tab:orange"},
+)
+
+survival_plot = make_plot_component(
+    {"Survival Rate": "tab:purple"},
+)
+
+
+# Initialize model
+unicellular_model = UnicellularModel()
+
+# Create renderer and draw agents
+renderer = SpaceRenderer(
+    unicellular_model,
+    backend="matplotlib",
+)
+renderer.draw_agents(agent_portrayal)
+renderer.post_process = post_process_space
+
+# Create the visualization page
+page = SolaraViz(
+    unicellular_model,
+    renderer,
+    components=[population_plot, energy_plot, survival_plot],
+    model_params=model_params,
+    name="Unicellular Organism Simulation",
+)
+
+page  # noqa

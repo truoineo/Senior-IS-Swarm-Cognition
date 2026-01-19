@@ -1,92 +1,76 @@
-from mesa.experimental.continuous_space import ContinuousSpaceAgent
-
-import random
+from mesa.discrete_space import CellAgent, FixedAgent
 import numpy as np
+import random
 
-class UnicellularAgent(ContinuousSpaceAgent):
+
+class UnicellularAgent(CellAgent):
     """
-    Agent with local sensing for resources and hazards
+    Agent with local sensing for resources and hazards.
+    NO NEIGHBOR AVOIDANCE - for testing purposes.
     """
+    
+    # ==================== INITIALIZATION ====================
+    
     def __init__(self,
                  model,
-                 space,
-                 pos,
                  sensing_radius,
                  movement_speed,
                  avoidance_threshold):
         
-        super().__init__(space=space, model=model)
-        self.position = np.array(pos, dtype=float)
+        super().__init__(model)
         
-        # Evolution parameters
-        self.sensing_radius = sensing_radius
-        self.movement_speed = movement_speed
-        self.avoidance_threshold = avoidance_threshold
+        self.sensing_radius = int(sensing_radius)
+        self.movement_speed = int(movement_speed)
+        self.avoidance_threshold = int(avoidance_threshold)
         
-        # State
         self.energy = 100
         self.resources_collected = 0
         
-        # Direction (random initial heading as unit vector)
-        angle = random.uniform(0, 2 * np.pi)
-        self.heading = angle
-        self.direction = np.array([np.cos(angle), np.sin(angle)])
+        self.direction = random.choice([
+            (0, 1), (0, -1), (1, 0), (-1, 0),
+            (1, 1), (1, -1), (-1, 1), (-1, -1)
+        ])
+    
+    # ==================== MAIN STEP ====================
     
     def step(self):
         """Execute one step of behavior"""
-        # 1. Sense environment
+        # 1. Sense environment (for movement decisions)
         perceived_resources = self.sense_resources()
         perceived_hazards = self.sense_hazards()
-        perceived_neighbors = self.get_neighbors_in_radius(
-            radius=self.avoidance_threshold
-        )
         
-        # 2. Decide movement based on rules (returns direction vector)
-        direction_vector = self.decide_movement(
-            perceived_resources, 
-            perceived_hazards, 
-            perceived_neighbors
-        )
+        # 2. Decide movement
+        direction = self.decide_movement(perceived_resources, perceived_hazards)
         
         # 3. Move
-        self.move(direction_vector)
+        self.move(direction)
         
-        # 4. Interact with environment (reuse distances from sensing!)
-        interaction_radius = 0.5
-        nearby_resources = [
-            r for r in perceived_resources 
-            if r['distance'] < interaction_radius
-        ]
-        nearby_hazards = [
-            h for h in perceived_hazards 
-            if h['distance'] < interaction_radius
-        ]
-        
-        self.collect_resources(nearby_resources)
-        self.check_hazards(nearby_hazards)
+        # 4. Interact with environment AT NEW POSITION
+        #    Check current cell directly, not old sensed data
+        self.collect_resources_at_current_cell()
+        self.check_hazards_at_current_position()
         
         # 5. Update state
         self.energy -= 1
         if self.energy <= 0:
-            self.remove()  # Agent dies if out of energy
+            self.remove()
+    
+    # ==================== 1. SENSING ====================
     
     def sense_resources(self):
         """Detect resources within sensing radius"""
         detected = []
-        for resource in self.model.resources: 
-            if resource.is_depleted():
-                continue
-            
-            distances, _ = self.space.calculate_distances(
-                point=resource.pos,
-                agents=[self]
-            )
-            distance = distances[0]
-            
-            if distance <= self.sensing_radius:
+        
+        neighborhood = self.cell.get_neighborhood(
+            radius=self.sensing_radius, 
+            include_center=True
+        )
+        
+        for agent in neighborhood.agents:
+            if isinstance(agent, Resource) and not agent.is_depleted():
                 detected.append({
-                    'resource': resource,
-                    'distance': distance,
+                    'resource': agent,
+                    'distance': self.cell_distance(agent.cell.coordinate),
                 })
         
         return detected
@@ -94,131 +78,188 @@ class UnicellularAgent(ContinuousSpaceAgent):
     def sense_hazards(self):
         """Detect hazards within sensing radius"""
         detected = []
-        for hazard in self.model.hazards:
-            distances, _ = self.space.calculate_distances(
-                point=hazard.pos,
-                agents=[self]
-            )
-            distance = distances[0]
-            
-            if distance <= self.sensing_radius:
-                detected.append({
-                    'hazard': hazard,
-                    'distance': distance,
-                })
+        
+        max_hazard_radius = 5
+        neighborhood = self.cell.get_neighborhood(
+            radius=self.sensing_radius + max_hazard_radius, 
+            include_center=True
+        )
+        
+        for agent in neighborhood.agents:
+            if isinstance(agent, Hazard):
+                distance = self.cell_distance(agent.cell.coordinate)
+                if distance <= self.sensing_radius + agent.radius:
+                    detected.append({
+                        'hazard': agent,
+                        'distance': distance,
+                    })
         
         return detected
     
-    def decide_movement(self, resources, hazards, neighbors):
+    def cell_distance(self, other_coord):
+        """Chebyshev distance for Moore grid"""
+        my_coord = self.cell.coordinate
+        
+        dx = abs(my_coord[0] - other_coord[0])
+        dy = abs(my_coord[1] - other_coord[1])
+        
+        if self.model.space.torus:
+            dx = min(dx, self.model.space.width - dx)
+            dy = min(dy, self.model.space.height - dy)
+        
+        return max(dx, dy)
+    
+    # ==================== 2. DECISION ====================
+    
+    def decide_movement(self, resources, hazards):
         """
-        CORE RULE-BASED LOGIC
-        Priority: Hazards > Neighbors > Resources > Random Walk
-        Returns direction as a unit vector [dx, dy]
+        SIMPLIFIED RULE-BASED LOGIC (NO NEIGHBOR AVOIDANCE)
+        Priority: Hazards > Resources > Random Walk
         """
         
         # Priority 1: AVOID HAZARDS
         if hazards:
-            avoidance_vector = np.zeros(2)
+            weighted_dx = 0
+            weighted_dy = 0
+            
             for hazard_info in hazards:
-                diff = self.position - np.array(hazard_info['hazard'].pos)
-                
-                if self.space.torus:
-                    inverse_diff = diff - np.sign(diff) * self.space.size
-                    diff = np.where(
-                        np.abs(diff) < np.abs(inverse_diff),
-                        diff,
-                        inverse_diff
-                    )
-                
-                weight = 1.0 / (hazard_info['distance'] + 0.1)
-                avoidance_vector += diff * weight
+                away = self.get_direction_away(hazard_info['hazard'].cell.coordinate)
+                effective_distance = max(0.1, hazard_info['distance'] - hazard_info['hazard'].radius)
+                weight = 1.0 / (effective_distance + 0.1)
+                weighted_dx += away[0] * weight
+                weighted_dy += away[1] * weight
             
-            if np.linalg.norm(avoidance_vector) > 0:
-                return avoidance_vector / np.linalg.norm(avoidance_vector)
+            if weighted_dx != 0 or weighted_dy != 0:
+                return (int(np.sign(weighted_dx)), int(np.sign(weighted_dy)))
         
-        # Priority 2: AVOID CROWDING
-        neighbor_agents, distances = neighbors
-        if len(neighbor_agents) > 0:
-            diff_vectors = self.space.calculate_difference_vector(
-                self.position,
-                agents=neighbor_agents
-            )
-            
-            repulsion_strengths = 1.0 / (distances + 0.1)
-            separation_vector = np.sum(
-                diff_vectors * repulsion_strengths[:, np.newaxis],
-                axis=0
-            )
-            
-            if np.linalg.norm(separation_vector) > 0.1:
-                return separation_vector / np.linalg.norm(separation_vector)
-        
-        # Priority 3: MOVE TOWARD RESOURCES
+        # Priority 2: MOVE TOWARD RESOURCES
         if resources:
-            attraction_vector = np.zeros(2)
+            weighted_dx = 0
+            weighted_dy = 0
+            
             for resource_info in resources:
-                diff = np.array(resource_info['resource'].pos) - self.position
-                
-                if self.space.torus:
-                    inverse_diff = diff - np.sign(diff) * self.space.size
-                    diff = np.where(
-                        np.abs(diff) < np.abs(inverse_diff),
-                        diff,
-                        inverse_diff
-                    )
-                
-                weight = 1.0 / np.sqrt(resource_info['distance'] + 1.0)
-                attraction_vector += diff * weight
+                toward = self.get_direction_to(resource_info['resource'].cell.coordinate)
+                weight = 1.0 / (resource_info['distance'] + 1.0)
+                weighted_dx += toward[0] * weight
+                weighted_dy += toward[1] * weight
             
-            if np.linalg.norm(attraction_vector) > 0:
-                return attraction_vector / np.linalg.norm(attraction_vector)
+            if weighted_dx != 0 or weighted_dy != 0:
+                return (int(np.sign(weighted_dx)), int(np.sign(weighted_dy)))
         
-        # Priority 4: RANDOM WALK
-        turn_angle = random.uniform(-0.3, 0.3)
-        rotation_matrix = np.array([
-            [np.cos(turn_angle), -np.sin(turn_angle)],
-            [np.sin(turn_angle), np.cos(turn_angle)]
-        ])
+        # Priority 3: RANDOM WALK
+        if random.random() < 0.2:
+            self.direction = random.choice([
+                (0, 1), (0, -1), (1, 0), (-1, 0),
+                (1, 1), (1, -1), (-1, 1), (-1, -1)
+            ])
         
-        new_direction = rotation_matrix @ self.direction
-        return new_direction / np.linalg.norm(new_direction)
+        return self.direction
     
-    def move(self, direction_vector):
-        """Move agent in direction specified by unit vector"""
-        # Store direction for next step
-        self.direction = direction_vector
-        self.heading = np.arctan2(direction_vector[1], direction_vector[0])
+    def get_direction_to(self, target_coord):
+        """Get direction toward target"""
+        my_coord = self.cell.coordinate
         
-        # Calculate and apply movement
-        new_position = self.position + direction_vector * self.movement_speed
-        self.position = new_position
+        dx = target_coord[0] - my_coord[0]
+        dy = target_coord[1] - my_coord[1]
+        
+        if self.model.space.torus:
+            if abs(dx) > self.model.space.width / 2:
+                dx = -np.sign(dx) * (self.model.space.width - abs(dx))
+            if abs(dy) > self.model.space.height / 2:
+                dy = -np.sign(dy) * (self.model.space.height - abs(dy))
+        
+        return (int(np.sign(dx)), int(np.sign(dy)))
     
-    def collect_resources(self, nearby_resources):
-        """
-        Collect from ALL nearby resources (standard BFO behavior).
-        Multiple resources can be collected simultaneously.
-        """
-        for resource_info in nearby_resources:
-            resource = resource_info['resource']
+    def get_direction_away(self, target_coord):
+        """Get direction away from target"""
+        toward = self.get_direction_to(target_coord)
+        return (-toward[0], -toward[1])
+    
+    # ==================== 3. MOVEMENT ====================
+    
+    def move(self, direction):
+        """Move agent by cell offset direction"""
+        self.direction = direction
+        
+        if self.movement_speed == 1:
+            next_cell = self.cell.connections.get(direction)
+            if next_cell is not None:
+                self.cell = next_cell
+        else:
+            current = self.cell.coordinate
+            new_x = current[0] + direction[0] * self.movement_speed
+            new_y = current[1] + direction[1] * self.movement_speed
             
-            collected = resource.collect(amount=5)
-            if collected > 0:
-                self.energy += collected
-                self.resources_collected += collected
-                #if hasattr(self.model, 'resources_collected'):
-                    #self.model.resources_collected += collected
-    
-    def check_hazards(self, nearby_hazards):
-        """
-        Take damage from ONE nearby hazard (standard BFO behavior).
-        Only the first hazard affects the agent per step.
-        """
-        if nearby_hazards:
-            # Take damage from first hazard only
-            hazard = nearby_hazards[0]['hazard']
-            self.energy -= hazard.damage
+            if self.model.space.torus:
+                new_x = new_x % self.model.space.width
+                new_y = new_y % self.model.space.height
+            else:
+                new_x = max(0, min(self.model.space.width - 1, new_x))
+                new_y = max(0, min(self.model.space.height - 1, new_y))
             
-            if self.energy <= 0:
+            target_cell = self.model.space[int(new_x), int(new_y)]
+            self.cell = target_cell
+    
+    # ==================== 4. INTERACTION ====================
+    
+    def collect_resources_at_current_cell(self):
+        """Collect from resources in current cell (after moving)"""
+        # Check agents in current cell directly
+        for agent in self.cell.agents:
+            if isinstance(agent, Resource) and not agent.is_depleted():
+                collected = agent.collect(amount=5)
+                if collected > 0:
+                    self.energy += collected
+                    self.resources_collected += collected
+    
+    def check_hazards_at_current_position(self):
+        """Take damage from hazards if within their radius"""
+        # Check nearby cells for hazards
+        neighborhood = self.cell.get_neighborhood(
+            radius=5,  # Max hazard radius
+            include_center=True
+        )
+        
+        for agent in neighborhood.agents:
+            if isinstance(agent, Hazard):
+                distance = self.cell_distance(agent.cell.coordinate)
+                if distance <= agent.radius:
+                    self.energy -= agent.damage
+                    if self.energy <= 0:
+                        self.remove()
+                        return
+
+
+# ==================== ENVIRONMENT ENTITIES ====================
+
+class Resource(FixedAgent):
+    """Resource patch - auto-removes when depleted"""
+    
+    def __init__(self, model, amount=100):
+        super().__init__(model)
+        self.amount = amount
+        self.initial_amount = amount
+    
+    def collect(self, amount=1):
+        """Agent collects from this resource"""
+        if self.amount > 0:
+            collected = min(amount, self.amount)
+            self.amount -= collected
+            
+            if self.amount <= 0:
                 self.remove()
+            
+            return collected
+        return 0
     
+    def is_depleted(self):
+        return self.amount <= 0
+
+
+class Hazard(FixedAgent):
+    """Hazardous area with radius of effect"""
     
+    def __init__(self, model, damage=10, radius=2):
+        super().__init__(model)
+        self.damage = damage
+        self.radius = radius
